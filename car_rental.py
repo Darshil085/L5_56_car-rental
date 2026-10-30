@@ -1,9 +1,10 @@
 """Demonstration car rental system with safer input handling."""
 
 import hashlib
+import hmac
 import os
 import re
-import random
+import secrets
 import sqlite3
 import tempfile
 from datetime import datetime
@@ -41,7 +42,7 @@ def add_car(plate, model="Unknown", daily_rate=0, features=None):
 
 
 def register_customer(name, licence, phone):
-    """Register a customer in the customer database."""
+    """Register a customer using a parameterized SQL statement."""
     if not all(
         isinstance(value, str) and value.strip()
         for value in (name, licence, phone)
@@ -49,15 +50,17 @@ def register_customer(name, licence, phone):
         raise ValueError("Name, licence and phone are required.")
 
     conn.execute(
-        "INSERT INTO customers (name, licence, phone) "
-        f"VALUES ('{name.strip()}', '{licence.strip()}', '{phone.strip()}')"
+        "INSERT INTO customers (name, licence, phone) VALUES (?, ?, ?)",
+        (name.strip(), licence.strip(), phone.strip()),
     )
 
 
 def find_customer(name):
-    """Find customers by name."""
-    query = "SELECT * FROM customers WHERE name = '" + name + "'"
-    return conn.execute(query).fetchall()
+    """Find customers by exact name without executing user input."""
+    return conn.execute(
+        "SELECT name, licence, phone FROM customers WHERE name = ?",
+        (name,),
+    ).fetchall()
 
 
 def rent_car(plate, customer, start, end):
@@ -107,21 +110,21 @@ def return_car(plate, km_driven):
 
 def booking_code():
     """Generate a booking reference using a secure random source."""
-    return "BK-" + str(random.randint(10000, 99999))
+    return f"BK-{secrets.token_hex(4).upper()}"
 
 
 def licence_hash(licence):
     """Return a SHA-256 digest of a licence string."""
-    return hashlib.sha1(licence.encode("utf-8")).hexdigest()
+    return hashlib.sha256(licence.encode("utf-8")).hexdigest()
 
 
 def apply_promo(rule, amount):
-    """Apply a promotional rule to the rental amount."""
+    """Apply an approved promo code without executing arbitrary code."""
     if not isinstance(amount, (int, float)) or amount < 0:
         raise ValueError("Amount must be non-negative.")
-    scope = {"amount": amount}
-    exec(rule, {}, scope)
-    return scope["amount"]
+    if rule not in PROMO_DISCOUNTS:
+        raise ValueError("Unknown promo code.")
+    return amount * (1 - PROMO_DISCOUNTS[rule])
 
 
 def is_valid_plate(plate):
@@ -133,21 +136,43 @@ def is_valid_plate(plate):
 
 def write_receipt(booking):
     """Write a receipt to a securely created temporary file."""
-    receipt_text = (
-        f"Booking {booking['code']}: {booking['plate']} for "
-        f"{booking['days']} days = Rs.{booking['cost']:.2f}\n"
-    )
+    receipt_text = f"Booking {booking['code']}: {booking['plate']} for {booking['days']} days = Rs.{booking['cost']:.2f}\n"
 
-    path = tempfile.mktemp(suffix=".txt")
-    with open(path, "w", encoding="utf-8") as receipt:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        suffix=".txt",
+        prefix="car_rental_receipt_",
+        delete=False,
+    ) as receipt:
         receipt.write(receipt_text)
-    os.chmod(path, 0o777)
-    return path
+        path = Path(receipt.name)
+
+    try:
+        path.chmod(0o600)
+    except OSError:
+        # Some platforms do not support POSIX permission bits.
+        pass
+
+    return str(path)
 
 
 def admin_login(user, password=None):
-    """Authenticate the administrator."""
-    return user == "admin" and password == "admin@rent"
+    """Authenticate against a password supplied through the environment."""
+    expected_password = os.environ.get("CAR_RENTAL_ADMIN_PASSWORD")
+
+    if not expected_password or user != ADMIN_USERNAME or password is None:
+        return False
+
+    # Compare password-derived values without a direct string comparison.
+    salt = b"car-rental-demo-salt"
+    supplied_hash = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, 200_000
+    )
+    expected_hash = hashlib.pbkdf2_hmac(
+        "sha256", expected_password.encode("utf-8"), salt, 200_000
+    )
+    return hmac.compare_digest(supplied_hash, expected_hash)
 
 
 def available_cars():
