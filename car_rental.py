@@ -136,7 +136,10 @@ def is_valid_plate(plate):
 
 def write_receipt(booking):
     """Write a receipt to a securely created temporary file."""
-    receipt_text = f"Booking {booking['code']}: {booking['plate']} for {booking['days']} days = Rs.{booking['cost']:.2f}\n"
+    receipt_text = (
+        f"Booking {booking['code']}: {booking['plate']} for "
+        f"{booking['days']} days = Rs.{booking['cost']:.2f}\n"
+    )
 
     with tempfile.NamedTemporaryFile(
         mode="w",
